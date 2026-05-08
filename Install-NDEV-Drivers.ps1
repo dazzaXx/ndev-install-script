@@ -136,6 +136,49 @@ if ($sig.Status -ne 'Valid') {
 }
 Write-Ok "Catalog signed (status: Valid)"
 
+# ----- Patch dpinst.xml for system language -----------------------------------
+Write-Step "Checking dpinst.xml for system language compatibility"
+$dpinstXml = Join-Path $WorkDir 'dpinst.xml'
+if (Test-Path $dpinstXml) {
+    $uiCulture = [System.Globalization.CultureInfo]::CurrentUICulture
+    $lcid      = $uiCulture.LCID
+    $lcidHex   = '0x{0:X4}' -f $lcid
+
+    $xml = New-Object System.Xml.XmlDocument; $xml.Load($dpinstXml)
+    $langNodes = $xml.SelectNodes('//language')
+
+    $match = $langNodes | Where-Object {
+        $_.GetAttribute('code') -eq $lcidHex
+    } | Select-Object -First 1
+
+    if ($match) {
+        Write-Ok "Language $lcidHex ($($uiCulture.Name)) already present in dpinst.xml"
+    } else {
+        Write-Warn "Language $lcidHex ($($uiCulture.Name)) not found in dpinst.xml - patching"
+
+        # Prefer English (0x0409) as the template; fall back to the first entry
+        $template = ($langNodes | Where-Object { $_.GetAttribute('code') -eq '0x0409' } | Select-Object -First 1)
+        if (-not $template) { $template = $langNodes | Select-Object -First 1 }
+
+        if ($template) {
+            $newLang = $template.CloneNode($true)
+            $newLang.SetAttribute('code', $lcidHex)
+            $xml.DocumentElement.AppendChild($newLang) | Out-Null
+            try {
+                $xml.Save($dpinstXml)
+                Write-Ok "Added language $lcidHex to dpinst.xml (cloned from $($template.GetAttribute('code')))"
+            } catch {
+                Write-Warn "Could not save patched dpinst.xml: $_"
+                Write-Warn "DPInst may silently fail if language $lcidHex is not listed"
+            }
+        } else {
+            Write-Warn "dpinst.xml contains no <language> nodes - cannot patch; DPInst may silently fail"
+        }
+    }
+} else {
+    Write-Ok "No dpinst.xml in working copy - DPInst will use built-in defaults"
+}
+
 # ----- Run DPInst -------------------------------------------------------------
 Write-Step "Running DPInst.exe to install drivers"
 $dpinst = Join-Path $WorkDir 'DPInst.exe'
